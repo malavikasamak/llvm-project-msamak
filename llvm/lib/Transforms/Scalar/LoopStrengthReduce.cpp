@@ -2316,6 +2316,7 @@ class LSRInstance {
                     SmallVectorImpl<const Formula *> &Workspace,
                     const Cost &CurCost,
                     const SmallPtrSet<const SCEV *, 16> &CurRegs,
+                    size_t &Counter,
                     DenseSet<const SCEV *> &VisitedRegs) const;
   void Solve(SmallVectorImpl<const Formula *> &Solution) const;
 
@@ -5575,6 +5576,7 @@ void LSRInstance::SolveRecurse(SmallVectorImpl<const Formula *> &Solution,
                                SmallVectorImpl<const Formula *> &Workspace,
                                const Cost &CurCost,
                                const SmallPtrSet<const SCEV *, 16> &CurRegs,
+                               size_t &Counter,
                                DenseSet<const SCEV *> &VisitedRegs) const {
   // Some ideas:
   //  - prune more:
@@ -5585,6 +5587,10 @@ void LSRInstance::SolveRecurse(SmallVectorImpl<const Formula *> &Solution,
   //    - don't compute a cost, and then compare. compare while computing a cost
   //      and bail early.
   //    - track register sets with SmallBitVector
+
+  if (++Counter >= ComplexityLimit / 2)
+    // Too complex to continue, giveup.
+    return;
 
   const LSRUse &LU = Uses[Workspace.size()];
 
@@ -5632,7 +5638,10 @@ void LSRInstance::SolveRecurse(SmallVectorImpl<const Formula *> &Solution,
       Workspace.push_back(&F);
       if (Workspace.size() != Uses.size()) {
         SolveRecurse(Solution, SolutionCost, Workspace, NewCost,
-                     NewRegs, VisitedRegs);
+                     NewRegs, Counter, VisitedRegs);
+        if (Counter >= ComplexityLimit / 2)
+          // Skip the rest.
+          return;
         if (F.getNumRegs() == 1 && Workspace.size() == 1)
           VisitedRegs.insert(F.ScaledReg ? F.ScaledReg : F.BaseRegs[0]);
       } else {
@@ -5661,9 +5670,16 @@ void LSRInstance::Solve(SmallVectorImpl<const Formula *> &Solution) const {
   DenseSet<const SCEV *> VisitedRegs;
   Workspace.reserve(Uses.size());
 
+  // Control the compiling time complexity.
+  size_t Counter = 0;
+
   // SolveRecurse does all the work.
   SolveRecurse(Solution, SolutionCost, Workspace, CurCost,
-               CurRegs, VisitedRegs);
+               CurRegs, Counter, VisitedRegs);
+  if (Counter >= ComplexityLimit / 2) {
+    LLVM_DEBUG(dbgs() << "\nToo complex to compute LSR Solution\n");
+    return;
+  }
   if (Solution.empty()) {
     LLVM_DEBUG(dbgs() << "\nNo Satisfactory Solution\n");
     return;
